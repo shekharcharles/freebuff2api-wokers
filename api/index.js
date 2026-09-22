@@ -1,24 +1,24 @@
-// Vercel Function 入口：把 Node req/res 适配成 Fetch API 后调用 worker.js 的 fetch handler
-// 部署：vercel.json 把所有路由指向本文件；环境变量在 Vercel 后台配置
+
+
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// 加载 worker 模块（与 Docker server.js 同一份代码）
+
 const worker = await import(resolve(__dirname, '../worker.js'));
-// worker.js 的 default export 是 { fetch(request, env) } 对象
+
 const workerModule = worker.default;
 
-// Vercel 需要禁用内置 bodyParser（我们手动读流）
+
 export const config = {
   api: {
     bodyParser: false,
   },
 };
 
-// 构建 worker 需要的 env（Vercel 环境变量名与 Docker 保持一致）
+
 function buildEnv(processEnv = process.env) {
   const env = {
     FREEBUFF_TOKEN: processEnv.FREEBUFF_TOKEN || '',
@@ -30,7 +30,7 @@ function buildEnv(processEnv = process.env) {
   return env;
 }
 
-// 判断是 Web Request 还是 Node req
+
 function isWebRequest(request) {
   return typeof request?.headers?.get === 'function' && typeof request?.arrayBuffer === 'function';
 }
@@ -76,12 +76,12 @@ async function readNodeRequestBody(request) {
   return Buffer.concat(chunks);
 }
 
-// Fetch Response → Node res（支持流式 SSE）
+
 async function sendNodeResponse(response, fetchResponse) {
   response.statusCode = fetchResponse.status;
   response.statusMessage = fetchResponse.statusText;
   fetchResponse.headers.forEach((value, key) => {
-    // 跳过 Vercel 自己管理的头
+
     if (['content-length', 'transfer-encoding', 'connection'].includes(key.toLowerCase())) return;
     response.setHeader(key, value);
   });

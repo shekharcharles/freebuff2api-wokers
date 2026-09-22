@@ -1,4 +1,4 @@
-# 凭据与密钥绝对不能进镜像/构建上下文
+
 .env
 .env.*
 credentials/
@@ -6,14 +6,14 @@ wrangler.toml
 freebuff_tools/freebuff_credentials.json
 freebuff_tools/freebuff_credentials.example.json
 
-# 仓库元数据
+
 .git/
 .gitignore
 .github/
 .hermes/
 .vercel/
 
-# 测试与日志
+
 test/
 freebuff_tools/test_*.py
 logs/
