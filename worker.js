@@ -502,6 +502,35 @@ function parseAccounts(env) {
 const acctHealth = new Map(); // token -> { alive, state, uid, quota, checkedAt }
 const HEALTH_OBSERVATION_TTL_MS = 10 * 60 * 1000;
 
+// Provider-policy circuit breaker.
+// If Freebuff explicitly suspends/bans an account for third-party access, do not
+// rotate into other accounts and risk cascading suspensions across the pool.
+let providerPolicyBlock = null; // { code, message, status, detectedAt }
+
+function setProviderPolicyBlock(error) {
+  providerPolicyBlock = {
+    code: error?.code || "account_suspended",
+    message: error?.upstreamMessage || error?.message || "Freebuff blocked third-party access",
+    status: error?.status || 403,
+    detectedAt: new Date().toISOString(),
+  };
+}
+
+function providerPolicyBlockedResponse() {
+  if (!providerPolicyBlock) return null;
+  return jsonResponse({
+    error: {
+      message: providerPolicyBlock.message,
+      type: "freebuff_provider_policy_block",
+      source: "freebuff",
+      code: providerPolicyBlock.code,
+      upstream_status: providerPolicyBlock.status,
+      detected_at: providerPolicyBlock.detectedAt,
+      detail: "Requests are paused to protect the remaining account pool after Freebuff reported a provider-policy suspension/ban.",
+    },
+  }, providerPolicyBlock.status || 403);
+}
+
 
 
 function parseFreebuffUpstreamError(status, dataOrText) {
@@ -1470,6 +1499,8 @@ function responsesInputToMessages(input, instructions) {
 
 
 async function executeCodeReview(env, chatParams, mc, isStream, mode) {
+  const blocked = providerPolicyBlockedResponse();
+  if (blocked) return blocked;
   const debug = env.FREEBUFF_DEBUG === "true";
   const reviewerAgent = mc.reviewer_agent;
   const reviewerModel = mc.upstream;
@@ -1565,6 +1596,8 @@ async function executeCodeReview(env, chatParams, mc, isStream, mode) {
 
 async function executeChat(env, chatParams, mc, isStream, mode) {
   if (isCodeReviewRequest(chatParams)) return executeCodeReview(env, chatParams, mc, isStream, mode);
+  const blocked = providerPolicyBlockedResponse();
+  if (blocked) return blocked;
   const debug = env.FREEBUFF_DEBUG === "true";
   const pool = parseAccounts(env);
   if (pool.length === 0) return jsonResponse({ error: { message: "Missing FREEBUFF_TOKEN environment variable", type: "config_error" } }, 503);
@@ -1687,7 +1720,13 @@ async function executeChat(env, chatParams, mc, isStream, mode) {
       if (e instanceof FreebuffUpstreamError) {
         lastFreebuffError = e;
         lastErrMsg = e.upstreamMessage || e.message;
-        if (["account_suspended", "banned", "country_blocked"].includes(e.code)) {
+        if (["account_suspended", "banned"].includes(e.code)) {
+          invalidateSessionCache(token);
+          cooldown(token, 24 * 60 * 60 * 1000);
+          setProviderPolicyBlock(e);
+          return providerPolicyBlockedResponse();
+        }
+        if (e.code === "country_blocked") {
           invalidateSessionCache(token);
           cooldown(token, 24 * 60 * 60 * 1000);
         }
