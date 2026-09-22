@@ -19,7 +19,7 @@ COPY server.js worker.js ./
 RUN printf '%s\n' \
   '#!/bin/sh' \
   'set -e' \
-  'URL="https://raw.githubusercontent.com/pingmike2/freebuff2api-wokers/main/worker.js"' \
+  'URL="https://raw.githubusercontent.com/shekharcharles/freebuff2api-wokers/main/worker.js"' \
   'if wget -q -T 20 -O /app/worker.js.tmp "$URL" && [ -s /app/worker.js.tmp ]; then' \
   '  mv /app/worker.js.tmp /app/worker.js' \
   '  echo "[entrypoint] worker.js updated"' \
