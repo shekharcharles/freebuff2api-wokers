@@ -1,8 +1,8 @@
-// freebuff2api Docker 宿主（v1.9.0）
-// - 把 Node http 请求适配成 CF 风格 Request 调 worker.js fetch handler
-// - 面板状态：首启固定密码 admin（登录后强制改密）、账号 CRUD（一账号一 socks5 出站）、连接测试
-// - 按账号 socks5 出站分流（undici Agent + socks CONNECT + 自管 TLS），经 setOutboundFetch 注入 worker
-// - 凭证持久化 credentials/admin.json（面板数据）；首次启动自动从 freebuff_credentials.json / FREEBUFF_TOKEN env 迁移
+
+
+
+
+
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, readdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -18,13 +18,13 @@ if (!existsSync(credDir)) mkdirSync(credDir, { recursive: true });
 const adminConfigPath = resolve(credDir, 'admin.json');
 
 // ---------------------------------------------------------------------------
-// worker 加载 + 出站分流注入
+
 // ---------------------------------------------------------------------------
 const worker = await import('./worker.js');
 const handler = worker.default;
 if (worker.setOutboundFetch) worker.setOutboundFetch(outboundFetchWithAccountProxy);
 
-// 每条 socks5（+ 直连兜底）一个 undici Agent
+
 const agentCache = new Map();
 function socksAgent(proxyUrl) {
   const key = proxyUrl || '__direct__';
@@ -64,7 +64,7 @@ function socksAgent(proxyUrl) {
   return agent;
 }
 
-// worker 出站钩子：按 token 匹配账号 socks5；未配置/未知 token → 直连
+
 function outboundFetchWithAccountProxy(url, init, token) {
   const acct = token ? getAccounts().find((a) => a.token === token) : null;
   const proxyUrl = acct && acct.enabled ? (acct.socks5 || '') : '';
@@ -73,7 +73,7 @@ function outboundFetchWithAccountProxy(url, init, token) {
 }
 
 // ---------------------------------------------------------------------------
-// admin 配置：加载/保存/迁移
+
 // ---------------------------------------------------------------------------
 let adminConfig = null;
 let adminConfigMtime = 0;
@@ -84,7 +84,7 @@ function hashPassword(password, salt) {
 
 function defaultConfig() {
   const salt = randomBytes(16).toString('hex');
-  const password = 'admin'; // 固定初始密码，用户登录后自行修改
+  const password = 'admin';
   return {
     salt,
     password_hash: hashPassword(password, salt),
@@ -100,7 +100,7 @@ function defaultConfig() {
   };
 }
 
-// defaultConfig 里生成的密码需要带出去，用模块级变量
+
 let initialPassword = '';
 function firstBootPassword(pw) { initialPassword = pw; }
 
@@ -113,10 +113,10 @@ function saveAdminConfig() {
   }
 }
 
-// 首次启动：固定初始密码 admin + 写一次性文件
+
 if (!existsSync(adminConfigPath)) {
   const salt = randomBytes(16).toString('hex');
-  const password = 'admin'; // 固定初始密码，用户登录后自行修改
+  const password = 'admin';
   firstBootPassword(password);
   adminConfig = {
     salt,
@@ -133,9 +133,9 @@ if (!existsSync(adminConfigPath)) {
   };
   saveAdminConfig();
   const pwPath = resolve(credDir, '.initial_password');
-  writeFileSync(pwPath, `管理员初始密码（登录 /admin 后请自行修改）\n密码: ${password}\n`);
-  console.log('[admin] 首次启动：初始密码文件已写入', pwPath);
-  console.log(`[admin] 初始密码: ${password}`);
+  writeFileSync(pwPath, `Initial administrator password (change it after logging in to /admin)\nPassword: ${password}\n`);
+  console.log('[admin] First startup: initial password file written to', pwPath);
+  console.log(`[admin] Initial password: ${password}`);
 }
 
 function reloadIfChanged() {
@@ -153,7 +153,7 @@ function getAccounts() {
   return Array.isArray(adminConfig.accounts) ? adminConfig.accounts : [];
 }
 
-// 旧凭证迁移：freebuff_credentials.json（accounts.<k>.authToken）/ credentials/*.json / FREEBUFF_TOKEN env
+
 function migrateLegacyAccounts() {
   reloadIfChanged();
   if (adminConfig.accounts.length > 0) return;
@@ -187,13 +187,13 @@ function migrateLegacyAccounts() {
   if (found.length > 0) {
     adminConfig.accounts = found;
     saveAdminConfig();
-    console.log(`[admin] 已迁移 ${found.length} 个旧账号到 admin.json`);
+    console.log(`[admin] Migrated ${found.length}  legacy account(s) to admin.json`);
   }
 }
 migrateLegacyAccounts();
 
 // ---------------------------------------------------------------------------
-// worker env 动态构建（面板改动即时生效）
+
 // ---------------------------------------------------------------------------
 function buildEnv() {
   reloadIfChanged();
@@ -209,7 +209,7 @@ function buildEnv() {
 }
 
 // ---------------------------------------------------------------------------
-// 会话与鉴权
+
 // ---------------------------------------------------------------------------
 const sessions = new Map(); // sid -> expiresAt
 const loginFails = { count: 0, lockedUntil: 0 };
@@ -234,13 +234,13 @@ function safeEqual(a, b) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP 基础
+
 // ---------------------------------------------------------------------------
 const port = parseInt(process.env.PORT || '8787', 10);
 const host = process.env.HOST || '0.0.0.0';
 
-// 返回 true：handleAdmin 内所有 `return sendJson(...)` 需要让主路由判定「已处理」，
-// 否则面板响应后请求会再转发给 worker 二次写头（Cannot write headers after they are sent）
+
+
 function sendJson(res, status, obj, headers = {}) {
   const body = JSON.stringify(obj);
   if (!res.headersSent) {
@@ -270,7 +270,7 @@ function maskToken(t) {
 }
 
 // ---------------------------------------------------------------------------
-// 上游连通性测试（面板按钮）
+
 // ---------------------------------------------------------------------------
 async function testProxyUrl(proxyUrl) {
   const started = Date.now();
@@ -304,8 +304,8 @@ async function testAccountToken(token, proxyUrl) {
   } finally { clearTimeout(timer); }
 }
 
-// 额度查询：`include-unused-rate-limits: 1` 让 session 接口直接回吐 Freebucks
-// 快照（额度/价格/off-peak/重置时间），不用等 429 才知道还剩多少。
+
+
 async function queryQuota(token, proxyUrl) {
   const dispatcher = socksAgent(proxyUrl || null);
   const ctrl = new AbortController();
@@ -323,12 +323,12 @@ async function queryQuota(token, proxyUrl) {
     const text = await r.text();
     let data = null; try { data = JSON.parse(text); } catch {}
     if (!data) return { ok: false, status: r.status, raw: text.slice(0, 400) };
-    // 被封：{"error":"account_suspended","message":"..."} —— 没有 freebucks 字段
+
     if (data.error || !data.freebucks) {
       return {
         ok: false, status: r.status, access_tier: data.accessTier,
         banned: /suspend|banned/i.test(String(data.error || '') + String(data.status || '')),
-        error: data.message || data.error || data.status || '无额度数据',
+        error: data.message || data.error || data.status || 'No quota data',
       };
     }
     const fb = data.freebucks;
@@ -351,12 +351,12 @@ async function queryQuota(token, proxyUrl) {
 }
 
 // ---------------------------------------------------------------------------
-// /admin 面板
+
 // ---------------------------------------------------------------------------
 const ADMIN_HTML = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>freebuff2api 管理面板</title>
+<title>freebuff2api Admin Panel</title>
 <style>
 :root{--bg:#0f1420;--card:#171e2e;--line:#26304a;--tx:#dbe4ff;--dim:#8b96b8;--ok:#3ddc97;--err:#ff6b6b;--pri:#5b8cff}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif}
@@ -393,7 +393,7 @@ let state={login:false,must:false,accounts:[],settings:{},tests:{}};
 async function api(path,opt={}){
   const r=await fetch('/admin/api'+path,{headers:{'Content-Type':'application/json','X-Requested-With':'fetch'},credentials:'same-origin',...opt});
   const j=await r.json().catch(()=>({}));
-  if(r.status===401&&path!=='/login'){state.login=false;render();throw new Error('未登录');}
+  if(r.status===401&&path!=='/login'){state.login=false;render();throw new Error('Not logged in');}
   if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
   return j;
 }
@@ -401,57 +401,57 @@ function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt
 async function render(){
   const app=$('#app');
   if(!state.login){
-    app.innerHTML='<div class="login card"><h2>freebuff2api 管理登录</h2>'
-      +(state.must?'<div class="msg err">首次使用：请用初始密码 admin 登录，然后修改密码。</div>':'')
-      +'<label>管理员密码</label><input id="pw" type="password" style="margin:6px 0 12px">'
-      +'<button id="btnLogin" style="width:100%">登录</button><div class="msg" id="loginMsg"></div></div>';
+    app.innerHTML='<div class="login card"><h2>freebuff2api Admin Login</h2>'
+      +(state.must?'<div class="msg err">First use: sign in with the initial password admin, then change it.</div>':'')
+      +'<label>Administrator Password</label><input id="pw" type="password" style="margin:6px 0 12px">'
+      +'<button id="btnLogin" style="width:100%">Sign In</button><div class="msg" id="loginMsg"></div></div>';
     $('#btnLogin').onclick=doLogin;$('#pw').onkeydown=e=>{if(e.key==='Enter')doLogin()};
     return;
   }
   const accts=state.accounts.map((a,i)=>\`
     <div class="acct" data-i="\${i}">
       <div class="grid">
-        <div><label>名称</label><input class="f-name" value="\${esc(a.name)}"></div>
-        <div><label>Token（留空=保留原值）</label><input class="f-token mono" placeholder="\${esc(a.token_masked)}"></div>
-        <div><label>SOCKS5 出站（socks5://user:pass@host:port，空=直连）</label><input class="f-socks mono" value="\${esc(a.socks5)}" placeholder="socks5://127.0.0.1:1080"></div>
+        <div><label>Name</label><input class="f-name" value="\${esc(a.name)}"></div>
+        <div><label>Token (leave blank to keep the current value)</label><input class="f-token mono" placeholder="\${esc(a.token_masked)}"></div>
+        <div><label>SOCKS5 outbound (socks5://user:pass@host:port; blank = direct)</label><input class="f-socks mono" value="\${esc(a.socks5)}" placeholder="socks5://127.0.0.1:1080"></div>
         <div style="display:flex;flex-direction:column;gap:6px">
-          <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" class="f-enabled" \${a.enabled?'checked':''} style="width:auto">启用</label>
+          <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" class="f-enabled" \${a.enabled?'checked':''} style="width:auto">Enabled</label>
           <div class="row" style="gap:4px">
-            <button class="mini ghost act-test-proxy">测代理</button>
-            <button class="mini ghost act-test-acct">测账号</button>
-            <button class="mini ghost act-quota">查额度</button>
-            <button class="mini danger act-del">删除</button>
+            <button class="mini ghost act-test-proxy">Test Proxy</button>
+            <button class="mini ghost act-test-acct">Test Account</button>
+            <button class="mini ghost act-quota">Check Quota</button>
+            <button class="mini danger act-del">Delete</button>
           </div>
         </div>
       </div>
       <div class="msg" id="msg-\${i}"></div>
     </div>\`).join('');
   app.innerHTML=\`
-  <h1>freebuff2api 管理面板</h1><div class="sub">Docker 宿主 · 按账号 SOCKS5 出站分流 · 改动保存后立即生效（无需重启容器）</div>
-  <div class="card"><h2>账号池（一个账号一条独立 socks5 出站）</h2>\${accts||'<div class="dim">暂无账号</div>'}
-    <div class="row" style="margin-top:8px"><button id="btnAdd">＋ 添加账号</button><button id="btnSaveAccts" class="ghost">保存账号</button><button id="btnQuotas" class="ghost">💰 查全部额度</button></div>
+  <h1>freebuff2api Admin Panel</h1><div class="sub">Docker host · Per-account SOCKS5 outbound routing · Saved changes apply immediately (no container restart required)</div>
+  <div class="card"><h2>Account Pool (one independent SOCKS5 outbound route per account)</h2>\${accts||'<div class="dim">No accounts yet</div>'}
+    <div class="row" style="margin-top:8px"><button id="btnAdd">＋ Add Account</button><button id="btnSaveAccts" class="ghost">Save Accounts</button><button id="btnQuotas" class="ghost">💰 Check All Quotas</button></div>
     <div class="msg" id="acctMsg"></div>
     <div id="quotaBox" class="dim" style="margin-top:8px"></div>
   </div>
-  <div class="card"><h2>服务变量</h2>
+  <div class="card"><h2>Service Variables</h2>
     <div class="grid" style="grid-template-columns:140px 1fr 140px 1fr">
-      <div><label>API Key（客户端鉴权）</label><input id="s-apikey" value="\${esc(state.settings.api_key||'')}"></div>
-      <div><label>CODEBUFF_API（留空=官方）</label><input id="s-api" class="mono" value="\${esc(state.settings.codebuff_api||'')}"></div>
+      <div><label>API Key (client authentication)</label><input id="s-apikey" value="\${esc(state.settings.api_key||'')}"></div>
+      <div><label>CODEBUFF_API (blank = official upstream)</label><input id="s-api" class="mono" value="\${esc(state.settings.codebuff_api||'')}"></div>
       <div><label>RELAY_KEY</label><input id="s-relay" class="mono" value="\${esc(state.settings.relay_key||'')}"></div>
       <div><label>DEBUG</label><select id="s-debug"><option value="false" \${state.settings.debug!=='true'?'selected':''}>false</option><option value="true" \${state.settings.debug==='true'?'selected':''}>true</option></select></div>
     </div>
-    <div class="row" style="margin-top:10px"><button id="btnSaveSettings" class="ghost">保存变量</button></div>
+    <div class="row" style="margin-top:10px"><button id="btnSaveSettings" class="ghost">Save Variables</button></div>
     <div class="msg" id="setMsg"></div>
   </div>
-  <div class="card"><h2>服务状态</h2><div id="healthBox" class="dim">加载中…</div></div>
-  <div class="card"><h2>修改管理员密码</h2>
+  <div class="card"><h2>Service Status</h2><div id="healthBox" class="dim">Loading…</div></div>
+  <div class="card"><h2>Change Administrator Password</h2>
     <div class="row">
-      <input id="pw-old" type="password" placeholder="当前密码" style="max-width:200px">
-      <input id="pw-new" type="password" placeholder="新密码（≥8位）" style="max-width:200px">
-      <button id="btnPw" class="ghost">修改密码</button>
+      <input id="pw-old" type="password" placeholder="Current password" style="max-width:200px">
+      <input id="pw-new" type="password" placeholder="New password (≥8 characters)" style="max-width:200px">
+      <button id="btnPw" class="ghost">Change Password</button>
     </div><div class="msg" id="pwMsg"></div>
   </div>
-  <div class="sub">退出登录 <a href="#" id="btnLogout" style="color:var(--pri)">logout</a> · 数据存储于 credentials/admin.json · 忘记密码：删除该文件并重启容器</div>\`;
+  <div class="sub">Sign out <a href="#" id="btnLogout" style="color:var(--pri)">logout</a> · Data is stored in credentials/admin.json · Forgot the password? Delete this file and restart the container</div>\`;
   bind();
   loadHealth();
 }
@@ -459,7 +459,7 @@ async function doLogin(){
   const pw=$('#pw').value;
   try{const j=await api('/login',{method:'POST',body:JSON.stringify({password:pw})});
     state.login=true;state.must=!!j.must_change_password;
-    if(state.must){await render();$('#app').innerHTML='<div class="login card"><h2>必须修改初始密码</h2><label>新密码（≥8位）</label><input id="np" type="password" style="margin:6px 0 12px"><button id="btnNP" style="width:100%">保存新密码</button><div class="msg" id="npMsg"></div></div>';$('#btnNP').onclick=async()=>{try{await api('/change_password',{method:'POST',body:JSON.stringify({new_password:$('#np').value})});state.must=false;await refresh();}catch(e){$('#npMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>';}};return;}
+    if(state.must){await render();$('#app').innerHTML='<div class="login card"><h2>The initial password must be changed</h2><label>New password (≥8 characters)</label><input id="np" type="password" style="margin:6px 0 12px"><button id="btnNP" style="width:100%">Save New Password</button><div class="msg" id="npMsg"></div></div>';$('#btnNP').onclick=async()=>{try{await api('/change_password',{method:'POST',body:JSON.stringify({new_password:$('#np').value})});state.must=false;await refresh();}catch(e){$('#npMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>';}};return;}
     await refresh();
   }catch(e){$('#loginMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>';}
 }
@@ -478,33 +478,33 @@ function collectAccts(){
   });
 }
 function bind(){
-  $('#btnAdd').onclick=()=>{state.accounts.push({name:'new-acct',token:'',token_masked:'新token',socks5:'',enabled:true});render()};
+  $('#btnAdd').onclick=()=>{state.accounts.push({name:'new-acct',token:'',token_masked:'new token',socks5:'',enabled:true});render()};
   $('#btnQuotas').onclick=async()=>{
-    const box=$('#quotaBox');box.innerHTML='查询中…（逐账号直连上游）';
+    const box=$('#quotaBox');box.innerHTML='Checking… (querying upstream per account)';
     try{const j=await api('/quotas');
-      box.innerHTML='<table><tr><th>账号</th><th>额度</th></tr>'
+      box.innerHTML='<table><tr><th>Account</th><th>Quota</th></tr>'
         +j.accounts.map(a=>'<tr><td>'+esc(a.name)+'<div class="dim mono">'+esc(a.token_masked||'')+'</div></td><td>'+renderQuota(a)+'</td></tr>').join('')
         +'</table>';
     }catch(e){box.innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
-$('#btnSaveAccts').onclick=async()=>{try{const j=await api('/accounts',{method:'POST',body:JSON.stringify({accounts:collectAccts()})});state.accounts=j.accounts;$('#acctMsg').innerHTML='<span class="ok">已保存，立即生效</span>';render()}catch(e){$('#acctMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
-  $('#btnSaveSettings').onclick=async()=>{try{await api('/settings',{method:'POST',body:JSON.stringify({settings:{api_key:$('#s-apikey').value.trim(),codebuff_api:$('#s-api').value.trim(),relay_key:$('#s-relay').value.trim(),debug:$('#s-debug').value}})});$('#setMsg').innerHTML='<span class="ok">已保存，立即生效</span>'}catch(e){$('#setMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
-  $('#btnPw').onclick=async()=>{try{await api('/change_password',{method:'POST',body:JSON.stringify({old_password:$('#pw-old').value,new_password:$('#pw-new').value})});$('#pwMsg').innerHTML='<span class="ok">已修改</span>'}catch(e){$('#pwMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
+$('#btnSaveAccts').onclick=async()=>{try{const j=await api('/accounts',{method:'POST',body:JSON.stringify({accounts:collectAccts()})});state.accounts=j.accounts;$('#acctMsg').innerHTML='<span class="ok">Saved; changes are effective immediately</span>';render()}catch(e){$('#acctMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
+  $('#btnSaveSettings').onclick=async()=>{try{await api('/settings',{method:'POST',body:JSON.stringify({settings:{api_key:$('#s-apikey').value.trim(),codebuff_api:$('#s-api').value.trim(),relay_key:$('#s-relay').value.trim(),debug:$('#s-debug').value}})});$('#setMsg').innerHTML='<span class="ok">Saved; changes are effective immediately</span>'}catch(e){$('#setMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
+  $('#btnPw').onclick=async()=>{try{await api('/change_password',{method:'POST',body:JSON.stringify({old_password:$('#pw-old').value,new_password:$('#pw-new').value})});$('#pwMsg').innerHTML='<span class="ok">Changed</span>'}catch(e){$('#pwMsg').innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
   $('#btnLogout').onclick=async(e)=>{e.preventDefault();await api('/logout',{method:'POST'});state.login=false;render()};
   document.querySelectorAll('.acct').forEach((el)=>{
     const i=+el.dataset.i;
     el.querySelector('.act-del').onclick=()=>{state.accounts.splice(i,1);render()};
     el.querySelector('.act-test-proxy').onclick=async()=>{
-      const m=el.querySelector('.msg');m.textContent='测试中…';
+      const m=el.querySelector('.msg');m.textContent='Testing…';
       try{const j=await api('/test_proxy',{method:'POST',body:JSON.stringify({socks5:el.querySelector('.f-socks').value.trim()})});
-        m.innerHTML=j.ok?('<span class="ok">✅ 出口IP '+esc(j.ip)+'（'+j.ms+'ms）</span>'):('<span class="err">❌ '+esc(j.error||'失败')+'</span>')}catch(e){m.innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
+        m.innerHTML=j.ok?('<span class="ok">✅ Outbound IP '+esc(j.ip)+'（'+j.ms+'ms）</span>'):('<span class="err">❌ '+esc(j.error||'Failed')+'</span>')}catch(e){m.innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
     el.querySelector('.act-quota').onclick=async()=>{
-      const m=el.querySelector('.msg');m.textContent='查询额度中…';
+      const m=el.querySelector('.msg');m.textContent='Checking quota…';
       const tok=el.querySelector('.f-token').value.trim()||null;
       try{const j=await api('/quota',{method:'POST',body:JSON.stringify({index:i,token:tok,socks5:el.querySelector('.f-socks').value.trim()})});
         m.innerHTML=renderQuota(j)}catch(e){m.innerHTML='<span class="err">'+esc(e.message)+'</span>'}
     };
     el.querySelector('.act-test-acct').onclick=async()=>{
-      const m=el.querySelector('.msg');m.textContent='测试中…';
+      const m=el.querySelector('.msg');m.textContent='Testing…';
       const tok=el.querySelector('.f-token').value.trim()||null;
       try{const j=await api('/test_account',{method:'POST',body:JSON.stringify({index:i,token:tok,socks5:el.querySelector('.f-socks').value.trim()})});
         m.innerHTML=j.ok?('<span class="ok">✅ HTTP '+j.status+' '+esc(JSON.stringify(j.body))+'</span>'):('<span class="err">❌ HTTP '+(j.status||'')+' '+esc(j.error||JSON.stringify(j.body||''))+'</span>')}catch(e){m.innerHTML='<span class="err">'+esc(e.message)+'</span>'}};
@@ -517,22 +517,22 @@ function fmtReset(iso){
   return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes());
 }
 function renderQuota(j){
-  if(!j)return '<span class="err">空返回</span>';
+  if(!j)return '<span class="err">Empty response</span>';
   if(!j.ok&&!j.daily){
-    return '<span class="err">❌ '+(j.banned?'账号被封：':'')+esc(j.error||('HTTP '+(j.status||'')))+'</span>';
+    return '<span class="err">❌ '+(j.banned?'Account banned: ':'')+esc(j.error||('HTTP '+(j.status||'')))+'</span>';
   }
   const d=j.daily||{};
   const rem=Number(d.remaining||0), lim=Number(d.limit||0), spent=Number(d.spent||0);
   const cls=rem>0?'ok':'err';
   let s='<span class="'+cls+'">💰 Freebucks '+rem+'/'+lim
-    +(spent?'（已用 '+spent+'）':'')+' · 重置 '+fmtReset(d.resetAt)+'</span>';
+    +(spent?'（Used '+spent+'）':'')+' · Reset '+fmtReset(d.resetAt)+'</span>';
   s+=' · tier=<b>'+esc(j.access_tier||'?')+'</b>';
   if(j.plan_id)s+=' · plan='+esc(j.plan_id);
   const pr=j.prices||{};
   const names=Object.keys(pr);
   if(names.length){
     const sorted=names.slice().sort((a,b)=>pr[a]-pr[b]);
-    s+='<div class="dim" style="margin-top:4px">可打次数：'
+    s+='<div class="dim" style="margin-top:4px">Affordable requests: '
       +sorted.map(function(m){
         const cost=pr[m];
         const times=cost>0?Math.floor(rem/cost):rem;
@@ -546,16 +546,16 @@ function renderQuota(j){
 }
 async function loadHealth(){
   try{const j=await api('/status');
-    $('#healthBox').innerHTML='<table><tr><th>名称</th><th>出口</th><th>token</th><th>启用</th></tr>'
-      +j.accounts.map(a=>'<tr><td>'+esc(a.name)+'</td><td class="mono">'+(a.socks5?esc(a.socks5):'<span class="dim">直连</span>')+'</td><td class="mono">'+esc(a.token_masked)+'</td><td>'+(a.enabled?'<span class="ok">on</span>':'<span class="err">off</span>')+'</td></tr>').join('')
-      +'</table><div class="dim" style="margin-top:6px">模型数: '+j.models_count+' · worker: '+esc(j.version)+' · token 池: '+j.token_pool_size+' 个启用账号</div>';
-  }catch(e){$('#healthBox').textContent='加载失败: '+e.message}
+    $('#healthBox').innerHTML='<table><tr><th>Name</th><th>Outbound</th><th>token</th><th>Enabled</th></tr>'
+      +j.accounts.map(a=>'<tr><td>'+esc(a.name)+'</td><td class="mono">'+(a.socks5?esc(a.socks5):'<span class="dim">Direct</span>')+'</td><td class="mono">'+esc(a.token_masked)+'</td><td>'+(a.enabled?'<span class="ok">on</span>':'<span class="err">off</span>')+'</td></tr>').join('')
+      +'</table><div class="dim" style="margin-top:6px">Models: '+j.models_count+' · worker: '+esc(j.version)+' · token pool: '+j.token_pool_size+' enabled account(s)</div>';
+  }catch(e){$('#healthBox').textContent='Failed to load: '+e.message}
 }
 render();
 </script></body></html>`;
 
 // ---------------------------------------------------------------------------
-// /admin 路由
+
 // ---------------------------------------------------------------------------
 async function handleAdmin(req, res, url) {
   const path = url.pathname;
@@ -571,7 +571,7 @@ async function handleAdmin(req, res, url) {
   try {
     if (apiPath === '/login' && req.method === 'POST') {
       const now = Date.now();
-      if (now < loginFails.lockedUntil) return sendJson(res, 429, { error: '尝试过多，稍后再试' });
+      if (now < loginFails.lockedUntil) return sendJson(res, 429, { error: 'Too many attempts; try again later' });
       const { password } = await readJson(req);
       reloadIfChanged();
       const okCfg = adminConfig;
@@ -579,7 +579,7 @@ async function handleAdmin(req, res, url) {
       if (!ok) {
         loginFails.count++;
         if (loginFails.count >= 5) { loginFails.lockedUntil = now + 5 * 60 * 1000; loginFails.count = 0; }
-        return sendJson(res, 401, { error: '密码错误' });
+        return sendJson(res, 401, { error: 'Incorrect password' });
       }
       loginFails.count = 0;
       const sid = newSession(okCfg.session_ttl_ms || 12 * 3600e3);
@@ -587,8 +587,8 @@ async function handleAdmin(req, res, url) {
         { 'Set-Cookie': `fb_admin=${sid}; Path=/; HttpOnly; SameSite=Strict` });
     }
 
-    // 以下全部需要会话
-    if (!checkSession(req)) return sendJson(res, 401, { error: '未登录' });
+
+    if (!checkSession(req)) return sendJson(res, 401, { error: 'Not logged in' });
 
     if (apiPath === '/logout' && req.method === 'POST') {
       const m = /(?:^|;\s*)fb_admin=([^;]+)/.exec(req.headers.cookie || '');
@@ -602,9 +602,9 @@ async function handleAdmin(req, res, url) {
       const { old_password, new_password } = await readJson(req);
       if (!adminConfig.must_change_password) {
         if (!safeEqual(hashPassword(String(old_password || ''), adminConfig.salt), adminConfig.password_hash))
-          return sendJson(res, 400, { error: '当前密码错误' });
+          return sendJson(res, 400, { error: 'Current password is incorrect' });
       }
-      if (!new_password || String(new_password).length < 8) return sendJson(res, 400, { error: '新密码至少 8 位' });
+      if (!new_password || String(new_password).length < 8) return sendJson(res, 400, { error: 'New password must be at least 8 characters' });
       adminConfig.salt = randomBytes(16).toString('hex');
       adminConfig.password_hash = hashPassword(String(new_password), adminConfig.salt);
       adminConfig.must_change_password = false;
@@ -613,7 +613,7 @@ async function handleAdmin(req, res, url) {
     }
 
     if (adminConfig.must_change_password)
-      return sendJson(res, 403, { error: '必须先修改初始密码', must_change: true });
+      return sendJson(res, 403, { error: 'You must change the initial password first', must_change: true });
 
     if (apiPath === '/config' && req.method === 'GET') {
       return sendJson(res, 200, {
@@ -625,7 +625,7 @@ async function handleAdmin(req, res, url) {
 
     if (apiPath === '/accounts' && req.method === 'POST') {
       const { accounts } = await readJson(req);
-      if (!Array.isArray(accounts)) return sendJson(res, 400, { error: 'accounts 必须是数组' });
+      if (!Array.isArray(accounts)) return sendJson(res, 400, { error: 'accounts must be an array' });
       const existing = getAccounts();
       adminConfig.accounts = accounts.map((a, i) => {
         const prev = existing.find((p) => p.name === a.name);
@@ -643,7 +643,7 @@ async function handleAdmin(req, res, url) {
 
     if (apiPath === '/settings' && req.method === 'POST') {
       const { settings } = await readJson(req);
-      if (!settings || typeof settings !== 'object') return sendJson(res, 400, { error: 'settings 必须是对象' });
+      if (!settings || typeof settings !== 'object') return sendJson(res, 400, { error: 'settings must be an object' });
       adminConfig.settings = {
         api_key: String(settings.api_key ?? adminConfig.settings?.api_key ?? ''),
         debug: settings.debug === 'true' ? 'true' : 'false',
@@ -657,7 +657,7 @@ async function handleAdmin(req, res, url) {
     if (apiPath === '/test_proxy' && req.method === 'POST') {
       const { socks5 } = await readJson(req);
       const v = socks5 && !/^socks5:\/\//.test(socks5) ? null : (socks5 || '');
-      if (socks5 && v === null) return sendJson(res, 400, { error: 'socks5 格式: socks5://user:pass@host:port' });
+      if (socks5 && v === null) return sendJson(res, 400, { error: 'socks5 format: socks5://user:pass@host:port' });
       const r = await testProxyUrl(v);
       return sendJson(res, 200, r);
     }
@@ -666,7 +666,7 @@ async function handleAdmin(req, res, url) {
       const { index, token, socks5 } = await readJson(req);
       const acc = getAccounts()[Number(index)];
       const tok = (token && String(token).trim()) || acc?.token;
-      if (!tok) return sendJson(res, 400, { error: '无 token（先填写保存或传 token）' });
+      if (!tok) return sendJson(res, 400, { error: 'No token (save one first or provide a token)' });
       const r = await testAccountToken(tok, socks5 !== undefined ? socks5 : acc?.socks5);
       return sendJson(res, 200, r);
     }
@@ -675,7 +675,7 @@ async function handleAdmin(req, res, url) {
       const { index, token, socks5 } = await readJson(req);
       const acc = getAccounts()[Number(index)];
       const tok = (token && String(token).trim()) || acc?.token;
-      if (!tok) return sendJson(res, 400, { error: '无 token（先填写保存或传 token）' });
+      if (!tok) return sendJson(res, 400, { error: 'No token (save one first or provide a token)' });
       const r = await queryQuota(tok, socks5 !== undefined ? socks5 : acc?.socks5);
       return sendJson(res, 200, r);
     }
@@ -685,7 +685,7 @@ async function handleAdmin(req, res, url) {
       const out = [];
       for (let i = 0; i < list.length; i++) {
         const a = list[i];
-        if (!a.token) { out.push({ name: a.name, ok: false, error: '无 token' }); continue; }
+        if (!a.token) { out.push({ name: a.name, ok: false, error: 'No token' }); continue; }
         out.push({ name: a.name, token_masked: maskToken(a.token), ...(await queryQuota(a.token, a.socks5)) });
       }
       return sendJson(res, 200, { accounts: out });
@@ -714,12 +714,12 @@ async function handleAdmin(req, res, url) {
 }
 
 // ---------------------------------------------------------------------------
-// 主服务
+
 // ---------------------------------------------------------------------------
 const server = createServer(async (nodeReq, nodeRes) => {
   const url = new URL(nodeReq.url || '/', `http://${nodeReq.headers.host || 'localhost'}`);
   try {
-    // 面板路由（不需要 API key）
+
     if (url.pathname === '/admin' || url.pathname.startsWith('/admin/')) {
       const handled = await handleAdmin(nodeReq, nodeRes, url);
       if (handled) return;
