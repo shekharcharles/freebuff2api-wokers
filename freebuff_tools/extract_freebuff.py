@@ -1,35 +1,5 @@
 #!/usr/bin/env python3
-"""Freebuff 一键获取 authToken 脚本（授权码轮询流程，交互方式对齐 cline_oauth.py）。
-
-用法：
-  python3 extract_freebuff.py login           # 开始登录（授权链接推 TG + 轮询拿 token）
-  python3 extract_freebuff.py tgsend          # 测试 TG 连通性（发一条测试消息）
-  python3 extract_freebuff.py show            # 显示全部账号（邮箱+完整token+存活状态+汇总一行一个）
-  python3 extract_freebuff.py session         # 测试开 session（POST）
-  python3 extract_freebuff.py chat [消息]     # 发一条消息测试模型 API
-  python3 extract_freebuff.py quota           # 查用量 /api/v1/usage
-  python3 extract_freebuff.py export          # 汇总全部账号 token 一行一个（复制进 CF Workers 变量）
-
-流程（与官方 CLI 一致）：
-  1. 生成设备指纹 fingerprintId
-  2. POST https://www.codebuff.com/api/auth/cli/code → 拿 Google 登录 URL + fingerprintHash
-  3. 授权链接打印 + 推送 TG，用户在浏览器打开并登录（脚本自动轮询）
-  4. 轮询 /api/auth/cli/status → 成功拿到 user（含 authToken）
-  5. authToken 保存到本地 / 推送 TG，之后直接作为 Bearer 调模型 API
-
-GitHub Actions 里的安全行为（重要）：
-  * 配置了 TG_BOT_TOKEN / TG_CHAT_ID 时，授权链接与 authToken 一律推送到 Telegram，
-    **authToken 绝不打印到标准输出/日志**（即使误打印也会被 ::add-mask:: 打码）。
-  * 未配置 TG 时（本地手动跑），保持原样打印，方便直接查看。
-  * TG 推送失败时直接报错退出，绝不把 token 落到日志里。
-
-环境变量：
-  TG_BOT_TOKEN         Telegram Bot Token（可选；与 TG_CHAT_ID 一起配置才推送）
-  TG_CHAT_ID           Telegram 接收 chat_id（可选）
-  FREEBUFF_TOKEN       手动指定 authToken（跳过 credentials 文件）
-
-依赖：仅 Python 3 标准库，无需 pip 安装任何东西。
-"""
+"""Freebuff authentication and account utility."""
 import argparse
 import base64
 import json
@@ -43,15 +13,15 @@ from pathlib import Path
 
 BASE_URL = "https://www.codebuff.com"
 CRED_FILE = Path(__file__).resolve().parent / "freebuff_credentials.json"
-POLL_INTERVAL = 5          # 秒，官方 CLI 用 5s
-POLL_TIMEOUT = 5 * 60      # 秒，官方 5 分钟
+POLL_INTERVAL = 5
+POLL_TIMEOUT = 5 * 60
 REQUEST_TIMEOUT = 30
 
 MODEL_DEFAULT = "deepseek/deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
-# CI / Telegram helpers（对齐 cline_oauth.py 的交互方式）
+
 # ---------------------------------------------------------------------------
 
 def in_ci():
@@ -63,7 +33,7 @@ def tg_configured():
 
 
 def send_tg(text):
-    """推送文本到 Telegram，失败返回 False（错误描述打印到 stderr，便于定位）。"""
+    """Freebuff authentication and account utility."""
     token = os.environ.get("TG_BOT_TOKEN")
     chat = os.environ.get("TG_CHAT_ID")
     if not token or not chat:
@@ -76,7 +46,7 @@ def send_tg(text):
         with urllib.request.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode() or "{}")
             if not data.get("ok", True):
-                print(f"   ⚠️ TG API 错误: {data.get('description', data)}")
+                print(f"   ⚠️ Telegram API error: {data.get('description', data)}")
                 return False
             return True
     except urllib.error.HTTPError as e:
@@ -85,21 +55,21 @@ def send_tg(text):
             desc = err.get("description", str(e))
         except Exception:
             desc = str(e)
-        print(f"   ⚠️ TG 发送失败: {desc}")
+        print(f"   ⚠️ Telegram send failed: {desc}")
         return False
     except Exception as e:
-        print(f"   ⚠️ TG 发送失败: {e}")
+        print(f"   ⚠️ Telegram send failed: {e}")
         return False
 
 
 def mask_value(value):
-    """在 CI 中把敏感值加入 GitHub Actions 日志掩码（即使误打出也被打码）。"""
+    """Freebuff authentication and account utility."""
     if in_ci() and value:
         print(f"::add-mask::{value}")
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers（标准库 urllib，无第三方依赖）
+
 # ---------------------------------------------------------------------------
 
 def _http(method: str, path: str, body=None, headers=None, query=None, timeout=REQUEST_TIMEOUT):
@@ -138,12 +108,12 @@ def get_token():
         return tok
     if CRED_FILE.exists():
         cred = json.loads(CRED_FILE.read_text())
-        # 兼容旧格式 {"default": {...}}
+
         tok = cred.get("authToken")
         if not tok:
             tok = cred.get("default", {}).get("authToken")
         if not tok:
-            # 新格式 {"accounts": {"<key>": {...}}}：取第一个账号
+
             accts = cred.get("accounts") or {}
             for u in accts.values():
                 tok = u.get("authToken")
@@ -154,7 +124,7 @@ def get_token():
 
 
 def _account_key(user: dict) -> str:
-    """账号唯一键：优先 id，其次 email，最后 authToken 前缀。"""
+    """Freebuff authentication and account utility."""
     uid = user.get("id") or ""
     email = user.get("email") or ""
     if uid:
@@ -166,8 +136,7 @@ def _account_key(user: dict) -> str:
 
 
 def save_credentials(user: dict, append: bool = True):
-    """保存凭证。append=True 时按账号分键追加（不覆盖其他账号）；
-    append=False 时写为 default（兼容旧格式，CI 用）。"""
+    """Freebuff authentication and account utility."""
     existing = {}
     if CRED_FILE.exists():
         try:
@@ -175,11 +144,11 @@ def save_credentials(user: dict, append: bool = True):
         except Exception:
             pass
     if append:
-        # 新格式：accounts 分键，保留已有账号
+
         accts = existing.get("accounts")
         if not isinstance(accts, dict):
             accts = {}
-            # 迁移旧格式 default → accounts
+
             if isinstance(existing.get("default"), dict):
                 accts[_account_key(existing["default"])] = existing["default"]
             existing = {"accounts": accts}
@@ -187,62 +156,62 @@ def save_credentials(user: dict, append: bool = True):
         accts[key] = user
         existing["accounts"] = accts
     else:
-        # 旧格式：直接覆盖 default（CI 单账号场景）
+
         existing["default"] = user
     CRED_FILE.write_text(json.dumps(existing, indent=2, ensure_ascii=False))
     accts = existing.get("accounts")
     acct_count = len(accts) if isinstance(accts, dict) else (1 if existing.get("default") else 0)
-    print(f"💾 凭证已保存 → {CRED_FILE}（当前 {acct_count} 个账号）")
+    print(f"💾 Credentials saved → {CRED_FILE}（current {acct_count} accounts）")
 
 
 # ---------------------------------------------------------------------------
-# 各功能
+
 # ---------------------------------------------------------------------------
 
 def gen_fingerprint():
-    """官方 legacy fallback 格式：codebuff-cli-<8位随机>"""
+    """Freebuff authentication and account utility."""
     rand = base64.urlsafe_b64encode(secrets.token_bytes(6)).decode().rstrip("=")[:8]
     return f"codebuff-cli-{rand}"
 
 
 def cmd_tgsend(args):
-    """测试 TG 连通性：发一条测试消息。"""
+    """Freebuff authentication and account utility."""
     if not tg_configured():
-        print("❌ 未设置 TG_BOT_TOKEN / TG_CHAT_ID")
+        print("❌ TG_BOT_TOKEN / TG_CHAT_ID is not configured")
         sys.exit(1)
-    ok = send_tg("✅ TG 连通性测试成功！\nFreebuff 提取工作流可以正常向你发消息。")
+    ok = send_tg("✅ Telegram connectivity test succeeded!\nThe Freebuff extraction workflow can send you messages normally.")
     if ok:
-        print("✅ 测试消息已发送到 TG，请查收。")
+        print("✅ Test message sent to Telegram.")
     else:
-        print("❌ TG 发送失败，请检查 TG_BOT_TOKEN / TG_CHAT_ID。")
+        print("❌ Telegram send failed; check TG_BOT_TOKEN / TG_CHAT_ID.")
         sys.exit(1)
 
 
 def cmd_login(args):
-    # 交互方式：TG 配置了就推 TG；CI 环境强制要求 TG（workflow 第一步也会拦）
+
     if in_ci() and not tg_configured():
-        print("::error::Actions 环境强制 TG 模式，请先配置 TG_BOT_TOKEN 和 TG_CHAT_ID")
+        print("::error::GitHub Actions requires Telegram mode; configure TG_BOT_TOKEN and TG_CHAT_ID first")
         sys.exit(1)
     use_tg = tg_configured()
 
     fingerprint_id = args.fingerprint or gen_fingerprint()
-    print(f"🚀 启动 Freebuff 登录流程（fingerprintId: {fingerprint_id}）...\n")
+    print(f"🚀 Starting Freebuff login flow（fingerprintId: {fingerprint_id}）...\n")
 
     status, data, _ = _http("POST", "/api/auth/cli/code", {"fingerprintId": fingerprint_id})
     if status != 200 or not data:
-        msg = f"❌ 请求登录 URL 失败: HTTP {status} {data}"
+        msg = f"❌ Failed to request login URL: HTTP {status} {data}"
         print(msg)
         if use_tg:
-            send_tg("⚠️ Freebuff 提取失败：\n" + msg)
+            send_tg("⚠️ Freebuff extraction failed：\n" + msg)
         sys.exit(1)
 
     login_url = data["loginUrl"]
     fingerprint_hash = data["fingerprintHash"]
     expires_at = data["expiresAt"]
-    # loginUrl 含一次性 auth_code，CI 里掩码，避免暴露到日志
+
     mask_value(login_url)
 
-    # 可选的轮询超时覆盖（对齐 cline_oauth.py：workflow 的 poll_timeout 传进来）
+
     poll_timeout = POLL_TIMEOUT
     env_timeout = os.environ.get("OAUTH_POLL_TIMEOUT")
     if env_timeout:
@@ -251,29 +220,29 @@ def cmd_login(args):
         except ValueError:
             pass
 
-    # 把授权链接推送到 TG，方便在手机上完成授权
+
     if use_tg:
         tg_msg = (
-            "🔑 *Freebuff 授权请求*\n\n"
-            "请在浏览器打开下面链接并完成登录：\n"
+            "🔑 *Freebuff authorization request*\n\n"
+            "Open the following link in a browser and complete sign-in：\n"
             f"{login_url}\n\n"
-            f"脚本将自动轮询等待，最多 {poll_timeout} 秒。"
+            f"The script will poll automatically for up to {poll_timeout} seconds。"
         )
         ok = send_tg(tg_msg)
         if not ok:
-            print("❌ 授权链接推送 TG 失败（请检查 TG_BOT_TOKEN / TG_CHAT_ID）")
+            print("❌ Failed to send authorization link to Telegram (check TG_BOT_TOKEN / TG_CHAT_ID)")
             sys.exit(1)
-        print("📨 授权链接已推送到 Telegram（URL 不打印到日志）。")
+        print("📨 Authorization link sent to Telegram (URL is not printed in logs).")
     else:
-        # 非 TG（本地手动跑）才打印 URL
+
         print("=" * 60)
-        print("1️⃣  在浏览器打开下面这个链接：")
+        print("1️⃣  Open the following link in your browser：")
         print(f"    {login_url}")
-        print("2️⃣  用 Google 账号登录并授权")
-        print(f"3️⃣  脚本自动轮询等待，最多 {poll_timeout} 秒")
+        print("2️⃣  Sign in with your Google account and authorize")
+        print(f"3️⃣  The script polls automatically for up to {poll_timeout} seconds")
         print("=" * 60)
 
-    print(f"\n🔄 等待你授权（脚本自动轮询，最多 {poll_timeout} 秒）...")
+    print(f"\n🔄 Waiting for authorization (automatic polling for up to {poll_timeout} seconds）...")
     start = time.time()
     attempts = 0
     while time.time() - start < poll_timeout:
@@ -289,61 +258,61 @@ def cmd_login(args):
         if status == 200 and data and data.get("user"):
             user = data["user"]
             if not user.get("authToken"):
-                print(f"⚠️ 返回 user 但没有 authToken: {json.dumps(user)[:300]}")
+                print(f"⚠️ User returned without authToken: {json.dumps(user)[:300]}")
                 sys.exit(1)
-            print(f"✅ 登录成功！（第 {attempts} 次轮询，{int(time.time()-start)}s）")
+            print(f"✅ Login successful!（attempt  {attempts}  polling attempt，{int(time.time()-start)}s）")
 
             email = user.get("email", "unknown")
-            # 邮箱 / id 同样视为敏感信息：打码，避免进入 Actions 日志
+
             mask_value(email)
             mask_value(str(user.get("id", "")))
-            print(f"✅ 登录成功! 账号: {email}")
+            print(f"✅ Login successful! Account: {email}")
 
-            # 本地运行：分账号追加（不覆盖已有账号）；CI 运行：覆盖 default
+
             save_credentials(user, append=not in_ci())
 
-            # 关键安全点：CI + 配置了 TG 时，authToken 只推 TG，绝不打印到日志
+
             auth_token = user["authToken"]
             if use_tg:
-                mask_value(auth_token)  # 兜底：即使万一打出也会被 Actions 掩码
+                mask_value(auth_token)
                 ok = send_tg(
-                    "🔑 *Freebuff authToken 已获取*\n\n"
-                    f"账号：`{email}`\n"
+                    "🔑 *Freebuff authToken obtained*\n\n"
+                    f"Account: `{email}`\n"
                     f"id：`{user.get('id')}`\n"
                     f"credits：`{user.get('credits')}`\n\n"
-                    "把下面这行填进 Cloudflare Worker 机密变量 `FREEBUFF_TOKEN`"
-                    "（多账号则换行追加）：\n"
+                    "Put the following line into the Cloudflare Worker secret `FREEBUFF_TOKEN`"
+                    " (for multiple accounts, add one per line):\n"
                     f"`{auth_token}`"
                 )
                 if not ok:
-                    print("❌ authToken 推送 TG 失败！token 未打印到日志，请检查 TG 配置后重试。")
+                    print("❌ Failed to send authToken to Telegram. The token was not printed to logs; check Telegram configuration and retry.")
                     sys.exit(1)
-                print("🔑 authToken 已通过 Telegram 私密发送（未写入日志）。")
+                print("🔑 authToken was sent privately through Telegram (not written to logs).")
             else:
                 mask_value(auth_token)
-                print("\n🔑 把下面这行填进 Cloudflare Worker 的机密变量 FREEBUFF_TOKEN：")
+                print("\n🔑 Put the following line into the Cloudflare Worker secret FREEBUFF_TOKEN:")
                 print("    " + auth_token)
             return user
         elif status == 401:
-            print(f"   [{int(time.time()-start)}s] 尚未登录（401），继续等待…")
+            print(f"   [{int(time.time()-start)}s] Not signed in yet (401); continuing to wait…")
         elif status == 400:
-            print(f"❌ 登录请求已失效: {data}")
+            print(f"❌ Login request expired: {data}")
             sys.exit(1)
         else:
-            print(f"   [{int(time.time()-start)}s] 状态 {status}: {str(data)[:120]}")
+            print(f"   [{int(time.time()-start)}s] Status {status}: {str(data)[:120]}")
         time.sleep(POLL_INTERVAL)
 
-    print("⏰ 等待登录超时，请重试。")
+    print("⏰ Login timed out; retry.")
     sys.exit(1)
 
 
 def cmd_show(_args):
-    """显示全部账号：邮箱 + token（完整显示，本地工具无需脱敏）+ 存活状态（0 消耗 GET /session），末尾汇总一行一个。"""
+    """Freebuff authentication and account utility."""
     pairs = _all_tokens()
     if not pairs:
-        print("❌ 未找到 authToken（先运行 login 或设置 FREEBUFF_TOKEN）")
+        print("❌ No authToken found (run login first or set FREEBUFF_TOKEN)")
         sys.exit(1)
-    print(f"📋 已保存凭证（{len(pairs)} 个账号）:")
+    print(f"📋 Saved credentials（{len(pairs)} accounts）:")
     print("-" * 60)
     for _key, at, email in pairs:
         verdict, detail = _check_one(at)
@@ -351,7 +320,7 @@ def cmd_show(_args):
         print(f"      {at}")
         print(f"      {detail}")
     print("-" * 60)
-    print("\n📋 汇总（一行一个，复制进 CF Worker 变量 FREEBUFF_TOKEN）:")
+    print("\n📋 Summary (one per line; copy into the CF Worker FREEBUFF_TOKEN variable):")
     for _key, at, _email in pairs:
         print(f"   {at}")
     return 0
@@ -360,7 +329,7 @@ def cmd_show(_args):
 def cmd_session(args):
     tok = get_token()
     if not tok:
-        print("❌ 未找到 authToken")
+        print("❌ No authToken found")
         sys.exit(1)
     headers = {"Authorization": f"Bearer {tok}"}
     model = args.model or MODEL_DEFAULT
@@ -370,15 +339,15 @@ def cmd_session(args):
     else:
         status, data, _ = _http("GET", "/api/v1/freebuff/session", headers=headers)
     print(f"📡 HTTP {status}")
-    print(json.dumps(data, indent=2, ensure_ascii=False) if data else "(空响应)")
+    print(json.dumps(data, indent=2, ensure_ascii=False) if data else "(Empty response)")
     return data
 
 
-# 官方 free-mode marker：系统提示必须以 canonical Buffy 开头（字节级 position 0）
-# 旧 `[System Override...]` 前缀绕过已被官方修补（403 free_mode_cli_required）
+
+
 CANONICAL_BUFFY = "You are Buffy, the strategic coding assistant."
 
-# 模型 → 上游 agentId（对齐 worker.js 的 MODELS 表；free 模式校验 agent+model 组合）
+
 MODEL_AGENTS = {
     "deepseek/deepseek-v4-flash": "base2-free-deepseek-flash",
     "deepseek/deepseek-v4-pro": "base2-free-deepseek",
@@ -397,12 +366,12 @@ def agent_for_model(model):
 def cmd_chat(args):
     tok = get_token()
     if not tok:
-        print("❌ 未找到 authToken")
+        print("❌ No authToken found")
         sys.exit(1)
 
-    # 1) 先确保有 active session（官方门控：无 session → 428 waiting_room_required）
+
     model = args.model or MODEL_DEFAULT
-    # 官方 SDK UA（free 模式识别依赖，浏览器 UA 会被拒）
+
     sdk_ua = "ai-sdk/openai-compatible/1.0.25/codebuff"
     headers = {"Authorization": f"Bearer {tok}", "User-Agent": sdk_ua}
     status, sess, _ = _http("POST", "/api/v1/freebuff/session",
@@ -416,10 +385,10 @@ def cmd_chat(args):
     else:
         print(f"   ⚠️ {str(sess)[:300]}")
         if not args.force:
-            print("   （使用 --force 仍尝试直发 chat 看报错）")
+            print("   （Using --force; sending chat directly to inspect the error）")
             sys.exit(1)
 
-    # 1.5) 先 START 一个 run，拿真实 runId（chat 校验 run_id 存在；agent 按模型映射）
+
     run_id = args.run_id
     agent_id = args.agent or agent_for_model(model)
     if not run_id:
@@ -430,11 +399,11 @@ def cmd_chat(args):
             run_id = sr["runId"]
             print(f"   📡 START run → HTTP {s} runId={run_id} (agent={agent_id})")
         else:
-            print(f"   ⚠️ START run 失败 HTTP {s}: {str(sr)[:200]}")
+            print(f"   ⚠️ START run failed HTTP {s}: {str(sr)[:200]}")
             if not args.force:
                 sys.exit(1)
 
-    # 2) 调 chat/completions：canonical Buffy 开头 + SDK UA + acting-user-id + data_collection deny
+
     chat_headers = {
         "Authorization": f"Bearer {tok}",
         "Content-Type": "application/json",
@@ -442,7 +411,7 @@ def cmd_chat(args):
     }
     if instance_id:
         chat_headers["x-freebuff-instance-id"] = instance_id
-    # 有凭证 id 就带 acting-user-id（官方 SDK 会带）
+
     uid = None
     if CRED_FILE.exists():
         try:
@@ -474,15 +443,15 @@ def cmd_chat(args):
     print(f"→ HTTP {status}")
     if status == 200 and isinstance(data, dict):
         msg = data.get("choices", [{}])[0].get("message", {})
-        print(f"✅ 回复: {msg.get('content', '')[:500]}")
+        print(f"✅ Reply: {msg.get('content', '')[:500]}")
         if msg.get("reasoning_content"):
             print(f"🧠 reasoning: {msg['reasoning_content'][:200]}")
         print(f"   usage: {data.get('usage')}")
-        # 清理 run
+
         _http("POST", "/api/v1/agent-runs", {"action": "FINISH", "runId": run_id}, headers)
     else:
-        print(json.dumps(data, indent=2, ensure_ascii=False)[:1500] if data else "(空响应)")
-        # 清理 run
+        print(json.dumps(data, indent=2, ensure_ascii=False)[:1500] if data else "(Empty response)")
+
         if run_id:
             _http("POST", "/api/v1/agent-runs", {"action": "CANCEL", "runId": run_id}, headers)
 
@@ -490,19 +459,19 @@ def cmd_chat(args):
 def cmd_quota(_args):
     tok = get_token()
     if not tok:
-        print("❌ 未找到 authToken")
+        print("❌ No authToken found")
         sys.exit(1)
     status, data, _ = _http("POST", "/api/v1/usage", {"fingerprintId": "cli-usage"},
                             headers={"Authorization": f"Bearer {tok}"})
     print(f"📡 HTTP {status}")
-    print(json.dumps(data, indent=2, ensure_ascii=False) if data else "(空响应)")
+    print(json.dumps(data, indent=2, ensure_ascii=False) if data else "(Empty response)")
 
 
 def _all_tokens():
-    """返回 [(key, token, email)]：优先读取 credentials.json 里的全部账号；未配置则用环境变量。"""
+    """Freebuff authentication and account utility."""
     tok = os.environ.get("FREEBUFF_TOKEN")
     if tok:
-        return [("env", tok, "环境变量")]
+        return [("env", tok, "Environment variable")]
     if CRED_FILE.exists():
         try:
             cred = json.loads(CRED_FILE.read_text())
@@ -519,13 +488,9 @@ def _all_tokens():
 
 
 def _format_quota(rate_limits):
-    """格式化只读 GET /session 返回的额度快照。
-
-    优先显示 Premium/Luna 等有明确 limit 的模型；如果上游只返回一个模型，
-    也照常显示。不会发起 POST，因此不创建 session、不消耗额度。
-    """
+    """Freebuff authentication and account utility."""
     if not isinstance(rate_limits, dict) or not rate_limits:
-        return "额度未知（上游未返回 rateLimitsByModel）"
+        return "Quota unknown (upstream did not return rateLimitsByModel)"
     rows = []
     for model, info in rate_limits.items():
         if not isinstance(info, dict):
@@ -539,92 +504,85 @@ def _format_quota(rate_limits):
         if reset:
             text += f"，reset={reset}"
         rows.append(text)
-    return "额度 " + "；".join(rows) if rows else "额度未知（快照字段不完整）"
+    return "Quota " + "；".join(rows) if rows else "Quota unknown (snapshot fields are incomplete)"
 
 
 def _check_one(tok):
-    """测活。GET /api/v1/freebuff/session 是 0 消耗探测（不创建 session），
-    一次调用同时判定：token 失效 / 被封禁 / 地区受限 / 额度用完 / 存活。
-    官方源码 freebuff-session-api.ts 判定：
-    - 正常账号：200（有 session）或 404（无 session）
-    - 被封账号：403 + {"status":"banned"}（Terminal，不可恢复）
-    - token 无效：401
-    - 额度用完：429 或 status=rate_limited
-    返回 (verdict, detail)。"""
+    """Freebuff authentication and account utility."""
     headers = {
         "Authorization": f"Bearer {tok}",
-        # 官方只读额度快照提示：不创建 session、不消耗额度。
+
         "x-freebuff-include-unused-rate-limits": "1",
     }
     status, data, _ = _http("GET", "/api/v1/freebuff/session", headers=headers,
                             timeout=REQUEST_TIMEOUT)
     if status is None:
-        return "网络错误", f"请求失败: {data.get('error') if isinstance(data, dict) else data}"
+        return "Network error", f"Request failed: {data.get('error') if isinstance(data, dict) else data}"
     if status == 401:
-        return "token 失效 ❌", "HTTP 401（authToken 无效或已被撤销，不是封号）"
+        return "Invalid token ❌", "HTTP 401（authToken is invalid or revoked; the account is not necessarily banned）"
     if status == 403:
-        # 403 + banned = 封号；403 + country_blocked = 地区受限；其他 403 也提示
+
         if isinstance(data, dict):
             st = data.get("status")
             if st == "banned":
-                return "已被封禁 ❌", "HTTP 403 + status=banned（官方语义：Terminal，账号不可恢复，可邮件 support@codebuff.com 申诉）"
+                return "Banned ❌", "HTTP 403 + status=banned（Upstream status is Terminal; contact support@codebuff.com to appeal）"
             if st == "country_blocked":
-                return "地区受限 ⚠️", "HTTP 403 + status=country_blocked（当前出口 IP 非美国）"
-        return "访问被拒 ⚠️", f"HTTP 403: {str(data)[:200]}"
+                return "Region restricted ⚠️", "HTTP 403 + status=country_blocked (current outbound IP is not in the United States)"
+        return "Access denied ⚠️", f"HTTP 403: {str(data)[:200]}"
     if status == 429:
-        quota_str = _format_quota(data.get("rateLimitsByModel")) if isinstance(data, dict) else "额度未知（429 未返回额度快照）"
-        return "额度用完 ⚠️", f"HTTP 429（当天 session 额度已用完，等 reset），{quota_str}"
+        quota_str = _format_quota(data.get("rateLimitsByModel")) if isinstance(data, dict) else "Quota unknown (429 did not include a quota snapshot)"
+        return "Quota exhausted ⚠️", f"HTTP 429（Today's session quota is exhausted; wait for reset），{quota_str}"
     if status == 404:
-        # 404 只代表当前没有 active session。部分上游版本会把额度快照
-        # 放在错误响应 JSON 中，若有就照常显示。
-        quota_str = _format_quota(data.get("rateLimitsByModel")) if isinstance(data, dict) else "额度未知（404 未返回额度快照）"
-        return "存活（无活跃 session）✅", f"HTTP 404（无 session，账号可用），{quota_str}"
+
+
+        quota_str = _format_quota(data.get("rateLimitsByModel")) if isinstance(data, dict) else "Quota unknown (404 did not include a quota snapshot)"
+        return "Alive (no active session) ✅", f"HTTP 404（No session; account is usable），{quota_str}"
     if not isinstance(data, dict):
-        return "未知", f"HTTP {status}: {str(data)[:200]}"
+        return "Unknown", f"HTTP {status}: {str(data)[:200]}"
     st = data.get("status")
     if st == "banned":
-        return "已被封禁 ❌", "官方语义：Terminal，账号不可恢复（可邮件 support@codebuff.com 申诉）"
-    # 测活：解析存活状态 + 额度
+        return "Banned ❌", "Upstream status is Terminal; contact support@codebuff.com to appeal"
+
     if st == "active":
         model = data.get("model", "?")
         tier = data.get("accessTier", "?")
         quota_str = _format_quota(data.get("rateLimitsByModel"))
         if quota_str:
             quota_str = "，" + quota_str
-        return "存活 ✅", f"session active, model={model}, tier={tier}{quota_str}"
+        return "Alive ✅", f"session active, model={model}, tier={tier}{quota_str}"
     if st in ("none", "ended"):
         quota_str = _format_quota(data.get("rateLimitsByModel"))
         if st == "ended":
-            detail = "当前 session 已结束，账号仍可用"
-            verdict = "存活（session 已结束）✅"
+            detail = "Current session ended; account remains usable"
+            verdict = "Alive (session ended) ✅"
         else:
-            detail = "0 消耗探测正常，账号可用"
-            verdict = "存活（无活跃 session）✅"
+            detail = "Zero-cost probe succeeded; account is usable"
+            verdict = "Alive (no active session) ✅"
         if quota_str:
             detail += f"，{quota_str}"
         return verdict, detail
     if st == "country_blocked":
-        return "地区受限 ⚠️", "当前出口 IP 非美国（freebuff 免费模型限 US）"
+        return "Region restricted ⚠️", "Current outbound IP is not in the United States (Freebuff free models are US-only)"
     if st == "model_locked":
         quota_str = _format_quota(data.get("rateLimitsByModel"))
-        return "存活（session 被锁定）⚠️", f"另一模型 session 占用中，稍后自动释放，{quota_str}"
+        return "Alive (session locked) ⚠️", f"Another model session is active; it will be released automatically later，{quota_str}"
     if st == "rate_limited":
         quota_str = _format_quota(data.get("rateLimitsByModel"))
-        return "额度用完 ⚠️", f"当天 session 额度已用完，等 reset，{quota_str}"
+        return "Quota exhausted ⚠️", f"Today's session quota is exhausted; wait for reset，{quota_str}"
     if st == "ip_capped":
-        return "存活（IP 并发达上限）⚠️", "当前出口 IP 活跃用户过多，稍后重试"
-    return "存活 ✅", f"HTTP {status}, status={st}"
+        return "Alive (IP concurrency limit reached) ⚠️", "Too many active users on the current outbound IP; retry later"
+    return "Alive ✅", f"HTTP {status}, status={st}"
 
 
 def cmd_export(_args):
-    """汇总全部账号的 FREEBUFF_TOKEN，一行一个，方便复制进 CF Workers 变量。"""
+    """Freebuff authentication and account utility."""
     pairs = _all_tokens()
     if not pairs:
-        print("❌ 未找到 authToken（先运行 login 或设置 FREEBUFF_TOKEN）")
+        print("❌ No authToken found (run login first or set FREEBUFF_TOKEN)")
         sys.exit(1)
-    print("# freebuff2api CF Workers 变量 FREEBUFF_TOKEN（一行一个账号）")
-    print("# 共 %d 个账号，复制下面的行到 Cloudflare → 变量 → FREEBUFF_TOKEN" % len(pairs))
-    print("# 注意：本输出含敏感 token，请勿泄露/提交到 git")
+    print("
+    print("
+    print("# Warning: this output contains sensitive tokens. Do not disclose or commit them to Git.")
     print("=" * 60)
     for _key, tok, _email in pairs:
         print(tok)
@@ -635,29 +593,29 @@ def cmd_export(_args):
 # ---------------------------------------------------------------------------
 
 def main():
-    p = argparse.ArgumentParser(description="Freebuff authToken 提取工具")
+    p = argparse.ArgumentParser(description="Freebuff authToken extraction utility")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    p_login = sub.add_parser("login", help="开始登录（生成 URL + 轮询拿 token）")
-    p_login.add_argument("--fingerprint", help="指定 fingerprintId（默认自动生成）")
+    p_login = sub.add_parser("login", help="Start login (generate URL and poll for token)")
+    p_login.add_argument("--fingerprint", help="Specify fingerprintId (generated automatically by default)")
 
-    sub.add_parser("tgsend", help="测试 TG 连通性（发一条测试消息）")
+    sub.add_parser("tgsend", help="Test Telegram connectivity (send a test message)")
 
-    sub.add_parser("show", help="显示已保存凭证并验证")
-    p_sess = sub.add_parser("session", help="开/查 session")
+    sub.add_parser("show", help="Show saved credentials and verify them")
+    p_sess = sub.add_parser("session", help="Create/check session")
     p_sess.add_argument("--model", default=MODEL_DEFAULT)
-    p_sess.add_argument("--post", action="store_true", help="POST 开 session（默认 GET）")
+    p_sess.add_argument("--post", action="store_true", help="POST to create a session (GET by default)")
 
-    p_chat = sub.add_parser("chat", help="发一条消息测试模型 API")
+    p_chat = sub.add_parser("chat", help="Send a message to test the model API")
     p_chat.add_argument("message", nargs="?", default=None)
     p_chat.add_argument("--model", default=MODEL_DEFAULT)
-    p_chat.add_argument("--agent", default=None, help="START run 用的 agentId（默认按模型自动映射）")
-    p_chat.add_argument("--run-id", default=None, help="指定 run_id（默认 START 一个）")
-    p_chat.add_argument("--force", action="store_true", help="session/run 失败也直发 chat")
+    p_chat.add_argument("--agent", default=None, help="agentId for START run (automatically mapped by model by default)")
+    p_chat.add_argument("--run-id", default=None, help="Specify run_id (START one by default)")
+    p_chat.add_argument("--force", action="store_true", help="Send chat directly even if session/run fails")
 
-    sub.add_parser("quota", help="查用量")
+    sub.add_parser("quota", help="Check usage")
 
-    sub.add_parser("export", help="汇总全部账号 token，一行一个，复制进 CF Workers 变量")
+    sub.add_parser("export", help="Export all account tokens, one per line, for the CF Workers variable")
 
     args = p.parse_args()
     {
