@@ -504,22 +504,53 @@ const HEALTH_OBSERVATION_TTL_MS = 10 * 60 * 1000;
 
 
 
+function parseFreebuffUpstreamError(status, dataOrText) {
+  let data = dataOrText;
+  let rawText = "";
+  if (typeof dataOrText === "string") {
+    rawText = dataOrText;
+    try { data = JSON.parse(dataOrText); } catch { data = null; }
+  } else if (dataOrText && typeof dataOrText === "object") {
+    try { rawText = JSON.stringify(dataOrText); } catch {}
+  }
+
+  const code = data && typeof data === "object"
+    ? (data.error || data.status || data.state || data.code || null)
+    : null;
+  const message = data && typeof data === "object"
+    ? (data.message || data.error_description || data.detail || null)
+    : null;
+
+  if (!code && !message && !rawText) return null;
+  return {
+    source: "freebuff",
+    status,
+    code: typeof code === "string" ? code : null,
+    message: typeof message === "string"
+      ? message
+      : (typeof code === "string" ? code : rawText.slice(0, 500)),
+    raw: rawText.slice(0, 1000),
+  };
+}
+
 function recordAccountObservation(token, status, dataOrText, extra = {}) {
   if (!token) return;
   let data = dataOrText;
   if (typeof dataOrText === "string") {
     try { data = JSON.parse(dataOrText); } catch { data = null; }
   }
-  const upstreamState = data && typeof data === "object" ? data.status || data.state : null;
+  const upstreamState = data && typeof data === "object" ? data.status || data.state || data.error : null;
   let state = null;
   if (status === 404) state = "ok";
-  else if (["banned", "country_blocked", "rate_limited", "model_locked", "ip_capped"].includes(upstreamState)) state = upstreamState;
+  else if (["banned", "account_suspended", "country_blocked", "rate_limited", "model_locked", "ip_capped"].includes(upstreamState)) state = upstreamState === "account_suspended" ? "suspended" : upstreamState;
   else if (status >= 200 && status < 300) state = "ok";
   else if (status === 401) state = "token_invalid";
   else if (status === 403) {
     state = upstreamState === "banned"
       ? "banned"
-      : upstreamState === "country_blocked" ? "country_blocked" : "blocked";
+      : upstreamState === "account_suspended"
+        ? "suspended"
+        : upstreamState === "country_blocked" ? "country_blocked" : "blocked";
   } else if (status === 429) state = "rate_limited";
   if (!state) return;
 
@@ -697,7 +728,7 @@ function remainingQuota(token, sessionModel) {
 
 function isQuotaExhausted(info, sessionModel) {
   if (!info) return false;
-  if (["rate_limited", "banned", "country_blocked", "token_invalid", "blocked", "model_locked", "ip_capped"].includes(info.state)) return true;
+  if (["rate_limited", "banned", "suspended", "country_blocked", "token_invalid", "blocked", "model_locked", "ip_capped"].includes(info.state)) return true;
 
 
 
@@ -747,6 +778,35 @@ class ModelUnavailableError extends Error {
     super("model unavailable upstream (paused/withdrawn): " + modelId + (upstreamMessage ? " — " + upstreamMessage : ""));
     this.name = "ModelUnavailableError";
     this.modelId = modelId;
+  }
+}
+
+class FreebuffUpstreamError extends Error {
+  constructor(status, dataOrText, prefix = "Freebuff upstream error") {
+    const info = parseFreebuffUpstreamError(status, dataOrText) || {
+      source: "freebuff",
+      status,
+      code: null,
+      message: String(dataOrText || "Unknown upstream error").slice(0, 500),
+      raw: String(dataOrText || "").slice(0, 1000),
+    };
+    super(prefix + ": " + (info.message || info.code || ("HTTP " + status)));
+    this.name = "FreebuffUpstreamError";
+    this.source = "freebuff";
+    this.status = status;
+    this.code = info.code;
+    this.upstreamMessage = info.message;
+    this.raw = info.raw;
+  }
+
+  toResponseError() {
+    return {
+      message: this.upstreamMessage || this.message,
+      type: "freebuff_upstream_error",
+      source: "freebuff",
+      code: this.code || "upstream_error",
+      upstream_status: this.status,
+    };
   }
 }
 
@@ -1056,7 +1116,7 @@ async function createSession(token, sessionModel, forceCreate = false) {
   if (r.status === 410 || hasExactErrorCode(r.data, "model_unavailable")) {
     throw new ModelUnavailableError(sessionModel, String((r.data && (r.data.message || r.data.error)) || r.text || "").slice(0, 200));
   }
-  throw new Error("create session failed: " + r.status + " " + (r.text || "").slice(0, 300));
+  throw new FreebuffUpstreamError(r.status, r.data || r.text, "Freebuff create-session error");
 }
 
 // ---------------------------------------------------------------------------
@@ -1512,6 +1572,7 @@ async function executeChat(env, chatParams, mc, isStream, mode) {
 
 
   let lastErrMsg = "";
+  let lastFreebuffError = null;
   for (let acctTry = 0; acctTry < pool.length; acctTry++) {
     const acct = pickToken(env, mc.session);
     const token = acct ? acct.token : null;
@@ -1577,6 +1638,10 @@ async function executeChat(env, chatParams, mc, isStream, mode) {
         if (resp.status === 410 || hasExactErrorCode(parsedErr, "model_unavailable")) {
           throw new ModelUnavailableError(mc.session, errText.slice(0, 200));
         }
+        const freebuffErr = parseFreebuffUpstreamError(resp.status, parsedErr || errText);
+        if (freebuffErr && ["account_suspended", "banned", "country_blocked"].includes(freebuffErr.code)) {
+          throw new FreebuffUpstreamError(resp.status, parsedErr || errText);
+        }
 
 
         const staleSession =
@@ -1619,6 +1684,17 @@ async function executeChat(env, chatParams, mc, isStream, mode) {
         return jsonResponse({ error: { message: "Model not available upstream: " + e.modelId + " (this model has been removed or paused upstream)", type: "unsupported_model" } }, 400);
       }
 
+      if (e instanceof FreebuffUpstreamError) {
+        lastFreebuffError = e;
+        lastErrMsg = e.upstreamMessage || e.message;
+        if (["account_suspended", "banned", "country_blocked"].includes(e.code)) {
+          invalidateSessionCache(token);
+          cooldown(token, 24 * 60 * 60 * 1000);
+        }
+        if (debug) console.log(`[acct ${acctTry + 1}] Freebuff error code=${e.code || "unknown"} status=${e.status}; switch account`);
+        continue;
+      }
+
       if (e instanceof QuotaExhaustedError) {
         sessCache.delete(token + ":" + mc.session);
         cooldown(token, e.retryAfterMs || 5 * 60 * 1000);
@@ -1635,6 +1711,9 @@ async function executeChat(env, chatParams, mc, isStream, mode) {
       lastErrMsg = msg;
       if (debug) console.log(`[acct ${acctTry + 1}] exception: ${msg.slice(0, 120)}, switch account`);
     }
+  }
+  if (lastFreebuffError) {
+    return jsonResponse({ error: lastFreebuffError.toResponseError() }, lastFreebuffError.status || 502);
   }
   return jsonResponse({ error: { message: lastErrMsg, type: "api_error" } }, 502);
 }
